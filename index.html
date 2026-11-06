@@ -1,0 +1,592 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Just a Timer</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #000;
+    --fg: #fff;
+    --quiet: #999;
+    --line: #444;
+    --time-size: 80px;
+    --key-size: clamp(20px, calc(var(--time-size) * .4), 72px);
+    --small-size: clamp(12px, calc(var(--time-size) * .16), 28px);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); }
+  body {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    overflow: hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  }
+  body.idle, body.idle .toggle { cursor: none; }
+
+  #timers { display: grid; gap: 8px; min-height: 0; padding: 8px 8px 0; }
+  .tile {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 2px solid var(--line);
+    border-radius: 10px;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  .tile.running { border-color: var(--fg); background: var(--fg); color: var(--bg); }
+  .toggle {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .toggle:focus-visible { outline: 3px solid currentColor; outline-offset: -8px; }
+  .time, #probe {
+    font-weight: 700;
+    line-height: 1;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .time { font-size: var(--time-size); }
+  .tenths { font-size: .5em; opacity: .75; }
+  #probe { position: fixed; top: 0; left: 0; visibility: hidden; font-size: 100px; }
+  .key {
+    position: absolute;
+    top: 8px;
+    left: 12px;
+    font-size: var(--key-size);
+    font-weight: 800;
+    line-height: 1;
+  }
+  .state {
+    position: absolute;
+    bottom: 8px;
+    left: 12px;
+    font-size: var(--small-size);
+    line-height: 1.2;
+  }
+  .name {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    left: calc(var(--key-size) + 24px);
+    min-width: 0;
+    padding: 2px 6px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: clamp(14px, calc(var(--time-size) * .2), 34px);
+    font-weight: 600;
+    text-align: right;
+  }
+  .name::placeholder { color: inherit; opacity: .65; }
+  .name:hover { border-color: currentColor; }
+  .name:focus { border-color: currentColor; outline: none; text-align: left; }
+  body.idle .name:placeholder-shown { opacity: 0; }
+  .reset {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    padding: 3px 8px;
+    border: 1px solid currentColor;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: clamp(12px, calc(var(--time-size) * .14), 22px);
+    cursor: pointer;
+    transition: opacity .3s;
+  }
+  body.idle .reset { opacity: 0; pointer-events: none; }
+
+  #bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px 16px;
+    min-height: 54px;
+    padding: 8px 12px;
+    color: var(--quiet);
+    font-size: 15px;
+    transition: opacity .3s;
+  }
+  body.idle #bar { opacity: 0; pointer-events: none; }
+  #hint { margin-right: auto; }
+  #bar button {
+    min-height: 34px;
+    padding: 0 12px;
+    border: 1px solid var(--quiet);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    cursor: pointer;
+  }
+  #bar button:disabled { opacity: .4; cursor: default; }
+  #bar button:focus-visible { outline: 3px solid var(--fg); outline-offset: 2px; }
+  #undo-wrap, #count-wrap, #colors { display: flex; align-items: center; gap: 8px; }
+  #undo-wrap[hidden] { display: none; }
+  #undo-label { color: var(--fg); }
+  #count { min-width: 2ch; color: var(--fg); font-variant-numeric: tabular-nums; text-align: center; }
+  #fewer, #more { width: 34px; padding: 0 !important; }
+  #colors button {
+    width: 48px;
+    padding: 0;
+    border-color: #888;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  #colors button[aria-pressed="true"] { outline: 3px solid var(--fg); outline-offset: 2px; }
+  #live {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  @media (max-width: 900px) { #hint { display: none; } }
+</style>
+</head>
+<body>
+<div id="timers"></div>
+<div id="bar">
+  <div id="hint">Press 1 to 9 and 0 to start and stop. Shift + number resets that timer. F for full screen.</div>
+  <div id="undo-wrap" hidden><span id="undo-label"></span><button id="undo" type="button">Undo</button></div>
+  <div id="count-wrap">
+    Timers
+    <button id="fewer" type="button" aria-label="Show fewer timers">&minus;</button>
+    <span id="count"></span>
+    <button id="more" type="button" aria-label="Show more timers">+</button>
+  </div>
+  <button id="reset-all" type="button">Reset all</button>
+  <div id="colors" role="group" aria-label="Colors"></div>
+  <button id="fullscreen" type="button">Full screen</button>
+</div>
+<div id="probe"><span id="probe-main"></span><span class="tenths">.0</span></div>
+<div id="live" aria-live="polite"></div>
+<script>
+const grid = document.getElementById("timers");
+const live = document.getElementById("live");
+const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
+const STATE_KEY = "just-a-timer-state";
+const COLORS_KEY = "just-a-timer-colors";
+const HOUR = 3600000;
+
+// ---- Saved state ----
+// A timer stores when it started, not a running count, so it keeps correct time
+// through a reload, a slow computer, or the screen sleeping.
+let timers = [];
+let shown = KEYS.length;
+
+function load() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(STATE_KEY));
+  } catch {}
+  const list = saved && Array.isArray(saved.timers) ? saved.timers : [];
+  timers = KEYS.map((_, i) => {
+    const s = list[i] || {};
+    return {
+      elapsed: Number.isFinite(s.elapsed) && s.elapsed >= 0 ? s.elapsed : 0,
+      startedAt: Number.isFinite(s.startedAt) ? s.startedAt : null,
+      name: typeof s.name === "string" ? s.name.slice(0, 40) : "",
+    };
+  });
+  const count = saved && Number.isInteger(saved.shown) ? saved.shown : KEYS.length;
+  shown = Math.max(Math.min(count, KEYS.length), lowestAllowedCount());
+}
+
+function save() {
+  try {
+    localStorage.setItem(STATE_KEY, JSON.stringify({ timers, shown }));
+  } catch {}
+}
+
+const elapsedOf = t => t.elapsed + (t.startedAt === null ? 0 : Math.max(0, Date.now() - t.startedAt));
+const inUse = t => t.startedAt !== null || t.elapsed > 0;
+
+// A timer with time on it always stays on screen.
+function lowestAllowedCount() {
+  let count = 1;
+  timers.forEach((t, i) => {
+    if (inUse(t)) count = i + 1;
+  });
+  return count;
+}
+
+// ---- Time format ----
+const pad = n => String(n).padStart(2, "0");
+
+function format(ms) {
+  const tenths = Math.floor(ms / 100);
+  const total = Math.floor(tenths / 10);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor(total / 60) % 60;
+  const seconds = total % 60;
+  const main = hours ? hours + ":" + pad(minutes) + ":" + pad(seconds) : minutes + ":" + pad(seconds);
+  return [main, "." + tenths % 10];
+}
+
+// ---- Tiles ----
+const hasNoHover = matchMedia("(hover: none)").matches;
+
+// A number typed into a name cannot also start a timer. So that a forgotten Enter
+// does not swallow the next start, editing a name ends after 4 seconds without typing.
+let nameTimer;
+
+function watchName(input) {
+  clearTimeout(nameTimer);
+  nameTimer = setTimeout(() => input.blur(), 4000);
+}
+
+const tiles = KEYS.map((key, i) => {
+  const root = document.createElement("div");
+  root.className = "tile";
+  root.innerHTML =
+    '<button class="toggle" type="button" aria-pressed="false" aria-label="Timer ' + key + '">' +
+      '<span class="key" aria-hidden="true">' + key + "</span>" +
+      '<span class="time"><span class="main"></span><span class="tenths"></span></span>' +
+      '<span class="state"></span>' +
+    "</button>" +
+    '<input class="name" type="text" maxlength="40" placeholder="Add a name" aria-label="Name for timer ' + key + '">' +
+    '<button class="reset" type="button" aria-label="Reset timer ' + key + '">Reset</button>';
+  grid.append(root);
+  const el = {
+    root,
+    toggle: root.querySelector(".toggle"),
+    main: root.querySelector(".main"),
+    tenths: root.querySelector(".tenths"),
+    state: root.querySelector(".state"),
+    name: root.querySelector(".name"),
+    reset: root.querySelector(".reset"),
+  };
+  el.toggle.addEventListener("click", () => toggle(i));
+  el.reset.addEventListener("click", () => resetTimers([i]));
+  el.name.addEventListener("focus", () => watchName(el.name));
+  el.name.addEventListener("input", () => {
+    watchName(el.name);
+    timers[i].name = el.name.value;
+    save();
+  });
+  return el;
+});
+
+const setText = (node, text) => {
+  if (node.textContent !== text) node.textContent = text;
+};
+
+let isLong = false;
+
+function render() {
+  let long = false;
+  timers.forEach((t, i) => {
+    const el = tiles[i];
+    const ms = elapsedOf(t);
+    const running = t.startedAt !== null;
+    if (ms >= HOUR) long = true;
+    const [main, tenths] = format(ms);
+    setText(el.main, main);
+    setText(el.tenths, tenths);
+    const start = hasNoHover ? "Tap to start" : "Press " + KEYS[i] + " to start";
+    setText(el.state, running ? "Running" : ms > 0 ? "Stopped" : start);
+    el.root.classList.toggle("running", running);
+    el.toggle.setAttribute("aria-pressed", String(running));
+    el.reset.hidden = !inUse(t);
+    el.root.hidden = i >= shown;
+  });
+  if (long !== isLong) {
+    isLong = long;
+    fit();
+  }
+  document.getElementById("count").textContent = shown;
+  document.getElementById("fewer").disabled = shown <= lowestAllowedCount();
+  document.getElementById("more").disabled = shown >= KEYS.length;
+  document.getElementById("reset-all").disabled = !timers.some(inUse);
+}
+
+function syncNames() {
+  timers.forEach((t, i) => {
+    if (document.activeElement !== tiles[i].name) tiles[i].name.value = t.name;
+  });
+}
+
+// ---- Start, stop, reset ----
+function announce(text) {
+  live.textContent = text;
+}
+
+function toggle(i) {
+  const t = timers[i];
+  const now = Date.now();
+  if (t.startedAt === null) {
+    t.startedAt = now;
+    announce("Timer " + KEYS[i] + " started");
+  } else {
+    t.elapsed += Math.max(0, now - t.startedAt);
+    t.startedAt = null;
+    announce("Timer " + KEYS[i] + " stopped at " + format(t.elapsed).join(""));
+  }
+  if (i + 1 > shown) {
+    shown = i + 1;
+    layout();
+  }
+  save();
+  render();
+}
+
+let undoEntries = null;
+let undoTimer;
+
+function resetTimers(indices) {
+  const used = indices.filter(i => inUse(timers[i]));
+  if (!used.length) return;
+  undoEntries = used.map(i => ({ i, elapsed: timers[i].elapsed, startedAt: timers[i].startedAt }));
+  for (const i of used) {
+    timers[i].elapsed = 0;
+    timers[i].startedAt = null;
+  }
+  const label = indices.length > 1 ? "All timers reset" : "Timer " + KEYS[used[0]] + " reset";
+  document.getElementById("undo-label").textContent = label;
+  document.getElementById("undo-wrap").hidden = false;
+  announce(label);
+  clearTimeout(undoTimer);
+  undoTimer = setTimeout(clearUndo, 15000);
+  showControls();
+  save();
+  render();
+}
+
+function clearUndo() {
+  undoEntries = null;
+  document.getElementById("undo-wrap").hidden = true;
+}
+
+function undoReset() {
+  if (!undoEntries) return;
+  for (const { i, elapsed, startedAt } of undoEntries) {
+    timers[i].elapsed = elapsed;
+    timers[i].startedAt = startedAt;
+  }
+  clearTimeout(undoTimer);
+  clearUndo();
+  announce("Reset undone");
+  save();
+  render();
+}
+
+// ---- Size ----
+// Pick the arrangement that gives the biggest digits, keeping the rows full
+// where possible, then size every timer's digits the same.
+function layout() {
+  const box = grid.getBoundingClientRect();
+  const width = box.width - 16;
+  const height = box.height - 8;
+  let best = 1;
+  let bestScore = -1;
+  for (let cols = 1; cols <= shown; cols++) {
+    const rows = Math.ceil(shown / cols);
+    const digits = Math.min(width / cols * 0.9 / 2.6, height / rows * 0.5);
+    const score = digits * (shown / (cols * rows)) ** 2;
+    if (score > bestScore) {
+      bestScore = score;
+      best = cols;
+    }
+  }
+  grid.style.gridTemplateColumns = "repeat(" + best + ", minmax(0, 1fr))";
+  grid.style.gridTemplateRows = "repeat(" + Math.ceil(shown / best) + ", minmax(0, 1fr))";
+  fit();
+}
+
+// Under an hour there is room for bigger digits; past an hour every timer shrinks together.
+function fit() {
+  const tile = tiles[0].root;
+  document.getElementById("probe-main").textContent = isLong ? "00:00:00" : "00:00";
+  const widest = document.getElementById("probe").getBoundingClientRect().width;
+  const size = Math.min(tile.clientWidth * 0.9 / widest * 100, tile.clientHeight * 0.5);
+  document.documentElement.style.setProperty("--time-size", size + "px");
+}
+
+function changeCount(change) {
+  shown = Math.min(KEYS.length, Math.max(lowestAllowedCount(), shown + change));
+  timers.forEach((_, i) => {
+    tiles[i].root.hidden = i >= shown;
+  });
+  layout();
+  save();
+  render();
+}
+
+// ---- Colors ----
+const PALETTES = [
+  { name: "White on black", bg: "#000000", fg: "#ffffff", quiet: "#999999", line: "#444444" },
+  { name: "Black on white", bg: "#ffffff", fg: "#000000", quiet: "#595959", line: "#bbbbbb" },
+  { name: "Yellow on black", bg: "#000000", fg: "#ffc400", quiet: "#999999", line: "#5c4a00" },
+  { name: "White on navy", bg: "#0b2a5b", fg: "#ffffff", quiet: "#b8c7e0", line: "#3d5a8c" },
+];
+const colorsEl = document.getElementById("colors");
+
+function setColors(palette) {
+  const root = document.documentElement.style;
+  for (const part of ["bg", "fg", "quiet", "line"]) root.setProperty("--" + part, palette[part]);
+  for (const button of colorsEl.children) {
+    button.setAttribute("aria-pressed", String(button.title === palette.name));
+  }
+}
+
+for (const palette of PALETTES) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "12";
+  button.title = palette.name;
+  button.setAttribute("aria-label", palette.name);
+  button.style.background = palette.bg;
+  button.style.color = palette.fg;
+  button.addEventListener("click", () => {
+    setColors(palette);
+    try {
+      localStorage.setItem(COLORS_KEY, palette.name);
+    } catch {}
+  });
+  colorsEl.append(button);
+}
+
+let savedColors = null;
+try {
+  savedColors = localStorage.getItem(COLORS_KEY);
+} catch {}
+setColors(PALETTES.find(palette => palette.name === savedColors) || PALETTES[0]);
+
+// ---- Keep the screen on ----
+let lock;
+
+async function keepAwake() {
+  if (lock && !lock.released) return;
+  try {
+    lock = await navigator.wakeLock.request("screen");
+  } catch {}
+}
+
+// ---- Full screen ----
+const fullscreenButton = document.getElementById("fullscreen");
+if (!document.documentElement.requestFullscreen) fullscreenButton.hidden = true;
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+  } else if (document.documentElement.requestFullscreen) {
+    document.documentElement.requestFullscreen().catch(() => {});
+  }
+}
+
+fullscreenButton.addEventListener("click", toggleFullscreen);
+document.addEventListener("fullscreenchange", () => {
+  fullscreenButton.textContent = document.fullscreenElement ? "Exit full screen" : "Full screen";
+});
+
+// ---- Cursor and controls ----
+// They fade after 3 seconds without the mouse. Pressing a number never brings them back.
+let idleTimer;
+
+function showControls() {
+  document.body.classList.remove("idle");
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(hideControls, 3000);
+}
+
+function hideControls() {
+  if (undoEntries) {
+    idleTimer = setTimeout(hideControls, 1000);
+  } else {
+    document.body.classList.add("idle");
+  }
+}
+
+addEventListener("mousemove", showControls);
+
+// ---- Keyboard ----
+addEventListener("keydown", event => {
+  keepAwake();
+  if (event.target instanceof HTMLInputElement) {
+    if (event.key === "Enter" || event.key === "Escape") event.target.blur();
+    return;
+  }
+  const command = event.ctrlKey || event.metaKey;
+  if (command && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "z" && undoEntries) {
+    event.preventDefault();
+    undoReset();
+    return;
+  }
+  // Leave browser shortcuts such as Cmd+1 alone, and ignore a key being held down.
+  if (command || event.altKey || event.repeat) return;
+  const physical = /^(?:Digit|Numpad)(\d)$/.exec(event.code);
+  const digit = physical ? physical[1] : /^\d$/.test(event.key) ? event.key : null;
+  if (digit !== null) {
+    event.preventDefault();
+    const i = KEYS.indexOf(digit);
+    if (event.shiftKey) resetTimers([i]);
+    else toggle(i);
+  } else if (event.key === "f" || event.key === "F") {
+    toggleFullscreen();
+  } else if (event.key === "Tab") {
+    showControls();
+  }
+});
+
+// After a mouse click, let go of the button, so a later Space cannot press it again.
+addEventListener("click", event => {
+  keepAwake();
+  if (event.detail > 0) event.target.closest("button")?.blur();
+});
+
+// ---- Everything else ----
+document.getElementById("undo").addEventListener("click", undoReset);
+document.getElementById("fewer").addEventListener("click", () => changeCount(-1));
+document.getElementById("more").addEventListener("click", () => changeCount(1));
+document.getElementById("reset-all").addEventListener("click", () => {
+  resetTimers(KEYS.map((_, i) => i));
+});
+
+// A second window showing this page stays in step, so one can control and another can project.
+addEventListener("storage", event => {
+  if (event.key !== STATE_KEY) return;
+  load();
+  syncNames();
+  layout();
+  render();
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  render();
+  keepAwake();
+});
+
+addEventListener("resize", layout);
+
+load();
+syncNames();
+render();
+layout();
+render();
+showControls();
+keepAwake();
+setInterval(render, 50);
+</script>
+</body>
+</html>
